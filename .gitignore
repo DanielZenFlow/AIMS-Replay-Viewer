@@ -1,0 +1,10 @@
+target/
+config.properties
+replays/
+logs/
+AIMS-Replay-Viewer.html
+viewer-assets/
+
+*.class
+*.log
+*.tmp

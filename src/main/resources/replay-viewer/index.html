@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAvis Replay Reviewer</title>
+  <link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+  <main class="app">
+    <aside class="panel">
+      <h1>Replay Reviewer</h1>
+
+      <label class="filePick">
+        <input id="fileInput" type="file" accept="application/json,.json">
+        Load replay JSON
+      </label>
+      <div id="dropZone" class="dropZone">Drop replay JSON here</div>
+
+      <div class="meta" id="meta">No replay loaded</div>
+
+      <div class="controls">
+        <button id="prevBtn" title="Previous step">&lt;</button>
+        <button id="playBtn" title="Play or pause">Play</button>
+        <button id="nextBtn" title="Next step">&gt;</button>
+      </div>
+      <label class="checkLine"><input id="autoPlayInput" type="checkbox"> Auto-play after load</label>
+      <label class="searchLabel">Playback delay (ms)
+        <input id="speedInput" type="number" min="20" value="120">
+      </label>
+      <input id="stepSlider" type="range" min="0" max="0" value="0">
+      <div class="stepLine">
+        <input id="stepInput" type="number" min="0" value="0">
+        <span id="stepText">/ 0</span>
+      </div>
+      <label class="searchLabel">Track object
+        <input id="trackInput" placeholder="agent7 or boxG">
+      </label>
+      <label class="checkLine"><input id="reachInput" type="checkbox"> Show selected agent reachability</label>
+      <div class="searchLabel">Highlight coordinate</div>
+      <div class="inputRow">
+        <input id="coordInput" placeholder="28,3">
+        <button id="coordGoBtn">Go</button>
+        <button id="coordClearBtn">Clear</button>
+      </div>
+      <label class="searchLabel">Reachability target
+        <input id="targetInput" placeholder="28,3">
+      </label>
+      <button id="scanBtn" class="wideBtn">Scan reachability regression</button>
+      <section>
+        <h2>Suspicious events</h2>
+        <div id="events" class="events"></div>
+      </section>
+      <section>
+        <h2>Actions</h2>
+        <div id="actions" class="actions"></div>
+      </section>
+    </aside>
+
+    <section class="boardWrap">
+      <div class="toolbar">
+        <button id="togglePanel" class="toolbarBtn" title="Hide / show sidebar">&laquo;</button>
+        <span id="hoverInfo">Java coordinates: row, col</span>
+      </div>
+      <div id="boards" class="boards">
+        <div id="axisCorner" class="axisCorner"></div>
+        <div id="axisTop"    class="axisTop"><div id="axisTopInner" class="axisInner"></div></div>
+        <div id="axisLeft"   class="axisLeft"><div id="axisLeftInner" class="axisInner"></div></div>
+        <div id="panViewport" class="panViewport">
+          <div id="panSurface" class="panSurface"></div>
+        </div>
+        <div id="hoverTip" class="hoverTip"></div>
+      </div>
+      <div class="statusBar">
+        <span id="statusInfo" class="statusInfo"></span>
+        <span class="statusSpacer"></span>
+        <span id="zoomInfo" class="statusInfo">100%</span>
+        <button id="resetView" class="toolbarBtn" title="Reset view (double-click board)">R</button>
+      </div>
+    </section>
+  </main>
+  <script src="latest-replay.js"></script>
+  <script src="viewer.js"></script>
+</body>
+</html>
