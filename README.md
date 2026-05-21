@@ -67,6 +67,39 @@ The runner also sets:
 MAVIS_TIMEOUT_MS=180000
 ```
 
+## Scope and Protocol Assumptions
+
+This tool is intentionally built for the Java client layout used by this
+project:
+
+```cmd
+java -Xmx4g -cp <project-root>\target\classes mapf.client.Client
+```
+
+It also assumes the current MAvis Hospital server/client text protocol. In this
+README, "protocol" means the line-based conversation between `server.jar` and a
+client: the server sends a level, the client sends joint actions such as
+`Move(N)|NoOp`, and the server replies with `true|false` acceptance values.
+
+If a future `server.jar` changes this protocol, the action syntax, the level
+format, or the meaning of accepted/rejected actions, users should modify this
+tool's Java source before trusting the generated replay JSON. The viewer is only
+as accurate as the recorder and Hospital semantics implemented in this
+repository.
+
+## Path Encoding on Windows
+
+The one-click runner supports project and tool folders whose paths contain
+spaces or non-ASCII characters, such as Chinese directory names. To avoid batch
+file encoding problems, generated `.cmd` helper scripts do not write those paths
+directly into the script body. Instead, the Java launcher passes paths through
+the Windows process environment, and the helper scripts expand variables such as
+`%AIMS_PROJECT_ROOT%` and `%AIMS_HOME%`.
+
+The MAvis server/client protocol itself is still treated as standard MAvis text:
+level files, action names, and server replies should keep the usual
+Hospital-domain format.
+
 ## Quick Start
 
 Download or clone this repository, then run:
@@ -117,16 +150,16 @@ Run:
 open-viewer.cmd
 ```
 
-If a viewer has already been generated, this opens it. If no viewer exists yet,
-the script creates an empty viewer first and then opens it.
+This opens the root-level viewer. If the viewer files are missing, the script
+creates an empty viewer first and then opens it.
 
-The generated viewer entry point is:
+The viewer entry point lives in the repository root:
 
 ```text
 AIMS-Replay-Viewer.html
 ```
 
-The generated viewer assets are:
+The viewer assets live next to it:
 
 ```text
 viewer-assets/
@@ -322,12 +355,16 @@ target/
 config.properties
 replays/
 logs/
-AIMS-Replay-Viewer.html
-viewer-assets/
+viewer-assets/latest-replay.js
 ```
 
 `config.properties` stores the local project root chosen during setup. It should
 not be committed because it is specific to one machine.
+
+`AIMS-Replay-Viewer.html`, `viewer-assets/viewer.css`, and
+`viewer-assets/viewer.js` are kept in the repository root as the always-available
+browser viewer shell. Recording or conversion refreshes
+`viewer-assets/latest-replay.js` with the latest replay data.
 
 ## Troubleshooting
 

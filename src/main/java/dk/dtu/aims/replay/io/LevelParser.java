@@ -125,7 +125,7 @@ public final class LevelParser {
         }
 
         Position[] compactAgents = Arrays.copyOf(agents, Math.max(0, maxAgent + 1));
-        Level level = new Level(levelName, rows, cols, walls, boxGoals, agentGoals, boxColors, agentColors);
+        Level level = new Level(levelName, rows, cols, compactAgents.length, walls, boxGoals, agentGoals, boxColors, agentColors);
         State initialState = new State(compactAgents, boxes);
         return new ParseResult(level, initialState);
     }

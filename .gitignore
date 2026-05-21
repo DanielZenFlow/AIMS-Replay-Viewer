@@ -2,8 +2,7 @@ target/
 config.properties
 replays/
 logs/
-AIMS-Replay-Viewer.html
-viewer-assets/
+viewer-assets/latest-replay.js
 
 *.class
 *.log

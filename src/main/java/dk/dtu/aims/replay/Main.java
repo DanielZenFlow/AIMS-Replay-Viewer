@@ -9,7 +9,9 @@ import dk.dtu.aims.replay.record.ClientRecorder;
 import dk.dtu.aims.replay.record.ServerProxyClient;
 import dk.dtu.aims.replay.run.RunCommand;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.CodeSource;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -24,7 +26,7 @@ public final class Main {
 
             String command = args[0];
             if (command.equals("run")) {
-                new RunCommand(Path.of(".")).run(Arrays.copyOfRange(args, 1, args.length));
+                new RunCommand(defaultAimsHome()).run(Arrays.copyOfRange(args, 1, args.length));
                 return;
             }
             if (command.equals("init-viewer")) {
@@ -157,9 +159,37 @@ public final class Main {
         }
         String script = options.get("client-script");
         if (script != null && !script.isBlank()) {
-            return "cmd /c \"" + Path.of(script).toAbsolutePath().normalize() + "\"";
+            return "cmd /d /s /c \"" + Path.of(script).toAbsolutePath().normalize() + "\"";
         }
         throw new IllegalArgumentException("Missing required option --client or --client-script");
+    }
+
+    private static Path defaultAimsHome() {
+        try {
+            CodeSource source = Main.class.getProtectionDomain().getCodeSource();
+            if (source == null || source.getLocation() == null) {
+                return Path.of(".").toAbsolutePath().normalize();
+            }
+
+            Path launcher = Path.of(source.getLocation().toURI()).toAbsolutePath().normalize();
+            if (Files.isRegularFile(launcher)) {
+                Path parent = launcher.getParent();
+                return parent != null ? parent : Path.of(".").toAbsolutePath().normalize();
+            }
+
+            Path fileName = launcher.getFileName();
+            Path parent = launcher.getParent();
+            if (fileName != null && fileName.toString().equals("classes")
+                    && parent != null
+                    && parent.getFileName() != null
+                    && parent.getFileName().toString().equals("target")
+                    && parent.getParent() != null) {
+                return parent.getParent().toAbsolutePath().normalize();
+            }
+            return launcher;
+        } catch (Exception ignored) {
+            return Path.of(".").toAbsolutePath().normalize();
+        }
     }
 
     private static void printUsage() {

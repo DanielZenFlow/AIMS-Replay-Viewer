@@ -8,6 +8,7 @@ public final class Level {
     private final String name;
     private final int rows;
     private final int cols;
+    private final int numAgents;
     private final boolean[][] walls;
     private final char[][] boxGoals;
     private final int[][] agentGoals;
@@ -17,6 +18,7 @@ public final class Level {
     public Level(String name,
                  int rows,
                  int cols,
+                 int numAgents,
                  boolean[][] walls,
                  char[][] boxGoals,
                  int[][] agentGoals,
@@ -25,6 +27,7 @@ public final class Level {
         this.name = name;
         this.rows = rows;
         this.cols = cols;
+        this.numAgents = numAgents;
         this.walls = copy(walls, rows, cols);
         this.boxGoals = copy(boxGoals, rows, cols);
         this.agentGoals = copy(agentGoals, rows, cols);
@@ -45,7 +48,7 @@ public final class Level {
     }
 
     public int numAgents() {
-        return agentColors.size();
+        return numAgents;
     }
 
     public boolean isWall(int row, int col) {

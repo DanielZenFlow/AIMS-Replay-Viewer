@@ -271,8 +271,8 @@ public final class RunCommand {
 
         Path proxyScript = aimsHome.resolve("target").resolve("aims-proxy-client.cmd");
         Path userClientScript = aimsHome.resolve("target").resolve("aims-user-client.cmd");
-        writeUserClientScript(config, userClientScript);
-        writeProxyScript(config, userClientScript, proxyScript);
+        writeUserClientScript(userClientScript);
+        writeProxyScript(proxyScript);
 
         List<String> command = new ArrayList<>();
         command.add("java");
@@ -281,7 +281,7 @@ public final class RunCommand {
         command.add("-l");
         command.add(level.toString());
         command.add("-c");
-        command.add("cmd /c target\\aims-proxy-client.cmd");
+        command.add("cmd /d /s /c target\\aims-proxy-client.cmd");
         command.add("-g");
         command.add("-s");
         command.add(String.valueOf(config.stepLimit()));
@@ -289,40 +289,49 @@ public final class RunCommand {
         command.add(String.valueOf(config.timeoutSeconds()));
 
         System.out.println("Running MAvis server through AIMS Replay Viewer...");
-        Process process = new ProcessBuilder(command)
+        ProcessBuilder serverBuilder = new ProcessBuilder(command)
                 .directory(aimsHome.toFile())
-                .inheritIO()
-                .start();
+                .inheritIO();
+        configureServerEnvironment(serverBuilder.environment(), config, userClientScript);
+        Process process = serverBuilder.start();
         int exit = process.waitFor();
         if (exit != 0) {
             throw new IllegalStateException("server.jar exited with code " + exit);
         }
     }
 
-    private void writeUserClientScript(RunConfig config, Path script) throws IOException {
-        int timeoutMs = config.timeoutSeconds() * 1000;
-        Path root = config.projectRoot();
+    private void writeUserClientScript(Path script) throws IOException {
         String body = """
                 @echo off
-                cd /d "%s"
-                set "MAVIS_TIMEOUT_MS=%d"
-                java -Xmx4g -cp "%s" mapf.client.Client
-                """.formatted(root, timeoutMs, root.resolve("target").resolve("classes"));
+                cd /d "%AIMS_PROJECT_ROOT%"
+                set "MAVIS_TIMEOUT_MS=%AIMS_TIMEOUT_MS%"
+                java -Xmx4g -cp "%AIMS_CLIENT_CLASSES%" mapf.client.Client
+                """;
         Files.writeString(script, body, StandardCharsets.US_ASCII);
     }
 
-    private void writeProxyScript(RunConfig config, Path userClientScript, Path proxyScript) throws Exception {
-        int timeoutMs = config.timeoutSeconds() * 1000;
-        Path jar = currentLauncherPath();
-        String launcher = launcherCommand(jar);
+    private void writeProxyScript(Path proxyScript) throws IOException {
         String body = """
                 @echo off
-                cd /d "%s"
-                set "MAVIS_TIMEOUT_MS=%d"
-                %s proxy-client --client-script "%s" --client-cwd "%s" --out-dir "%s" --viewer-dir "%s"
-                """.formatted(aimsHome, timeoutMs, launcher, userClientScript, config.projectRoot(),
-                aimsHome.resolve("replays"), aimsHome);
+                cd /d "%AIMS_HOME%"
+                set "MAVIS_TIMEOUT_MS=%AIMS_TIMEOUT_MS%"
+                %AIMS_LAUNCHER% proxy-client --client-script "%AIMS_USER_CLIENT_SCRIPT%" --client-cwd "%AIMS_PROJECT_ROOT%" --out-dir "%AIMS_REPLAYS%" --viewer-dir "%AIMS_HOME%"
+                """;
         Files.writeString(proxyScript, body, StandardCharsets.US_ASCII);
+    }
+
+    private void configureServerEnvironment(Map<String, String> environment,
+                                            RunConfig config,
+                                            Path userClientScript) throws Exception {
+        int timeoutMs = config.timeoutSeconds() * 1000;
+        Path root = config.projectRoot();
+        environment.put("AIMS_HOME", aimsHome.toString());
+        environment.put("AIMS_PROJECT_ROOT", root.toAbsolutePath().normalize().toString());
+        environment.put("AIMS_CLIENT_CLASSES", root.resolve("target").resolve("classes").toAbsolutePath().normalize().toString());
+        environment.put("AIMS_USER_CLIENT_SCRIPT", userClientScript.toAbsolutePath().normalize().toString());
+        environment.put("AIMS_REPLAYS", aimsHome.resolve("replays").toAbsolutePath().normalize().toString());
+        environment.put("AIMS_TIMEOUT_MS", String.valueOf(timeoutMs));
+        environment.put("AIMS_LAUNCHER", launcherCommand(currentLauncherPath()));
     }
 
     private static Path currentLauncherPath() throws Exception {
