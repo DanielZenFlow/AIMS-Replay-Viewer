@@ -21,28 +21,34 @@ let timer = null;
 let highlightCoord = null;
 let notificationTimer = null;
 let tutorialStepIndex = 0;
+let indexedReplayEvents = new Map();
+let indexedReplayEventTotal = 0;
 
 const TUTORIAL_STORAGE_KEY = 'aims-replay-viewer:onboarding-seen';
 const tutorialSteps = [
   {
     title: 'Load a replay',
-    body: 'The latest generated replay loads automatically. You can also use Load replay JSON or drop a replay file onto the viewer.'
+    body: 'The newest generated replay loads automatically when available. You can also use Load replay JSON or drag a JSON file onto the drop zone.'
   },
   {
-    title: 'Play the timeline',
-    body: 'Use the step buttons, Play, the slider, or the step number field to move through accepted and rejected actions.'
+    title: 'Play the run',
+    body: 'Use Play, Previous, Next, the slider, or the step number field to move through the replay one server frame at a time.'
   },
   {
-    title: 'Read the board',
-    body: 'Mouse wheel zooms, the lower-right reset control restores the board view, and the coordinate readout shows the row and column under the cursor.'
+    title: 'Navigate the board',
+    body: 'Drag empty board space to pan, use the mouse wheel to zoom, and use the lower-right reset button to restore the default view.'
   },
   {
     title: 'Track objects',
-    body: 'Type values like agent0 or boxA to highlight an object and its trail through the replay.'
+    body: 'Type values like agent0 or boxA to highlight an object and its trail through the replay. Use Highlight coordinate to mark a specific row,column cell.'
   },
   {
-    title: 'Inspect reachability',
-    body: 'Set Track object to an agent and enter a target coordinate to inspect reachability changes across the replay.'
+    title: 'Inspect agent intent',
+    body: 'Hover an agent token to see field-labeled planner intent: phase, subgoal, subgoal type, progress, planned action, server action, and movement facts.'
+  },
+  {
+    title: 'Review highlights',
+    body: 'Use the lower-right Highlights button to inspect high-signal current-step events such as rejected actions, regressions, blockers, conflicts, and subgoal evaluations.'
   }
 ];
 
@@ -62,13 +68,9 @@ const els = {
   coordInput:    document.getElementById('coordInput'),
   coordGoBtn:    document.getElementById('coordGoBtn'),
   coordClearBtn: document.getElementById('coordClearBtn'),
-  targetInput:   document.getElementById('targetInput'),
-  reachInput:    document.getElementById('reachInput'),
   autoPlayInput: document.getElementById('autoPlayInput'),
   speedInput:    document.getElementById('speedInput'),
-  scanBtn:       document.getElementById('scanBtn'),
   actions:       document.getElementById('actions'),
-  events:        document.getElementById('events'),
   hoverInfo:     document.getElementById('hoverInfo'),
   boards:        document.getElementById('boards'),
   panViewport:   document.getElementById('panViewport'),
@@ -80,6 +82,10 @@ const els = {
   statusInfo:    document.getElementById('statusInfo'),
   zoomInfo:      document.getElementById('zoomInfo'),
   resetViewBtn:  document.getElementById('resetView'),
+  stepEventsBtn: document.getElementById('stepEventsBtn'),
+  stepInspector: document.getElementById('stepInspector'),
+  stepInspectorClose: document.getElementById('stepInspectorClose'),
+  stepInspectorBody: document.getElementById('stepInspectorBody'),
   helpBtn:       document.getElementById('helpBtn'),
   helpDialog:    document.getElementById('helpDialog'),
   helpCloseBtn:  document.getElementById('helpCloseBtn'),
@@ -106,6 +112,15 @@ const MAX_ZOOM  = 4.0;
 const state = {
   zoom: 1,
   pan:  { x: 0, y: 0 },
+};
+
+const panDrag = {
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  originX: 0,
+  originY: 0,
 };
 
 init();
@@ -171,9 +186,6 @@ function init() {
   els.coordInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') els.coordGoBtn.click();
   });
-  els.targetInput.addEventListener('input', render);
-  els.reachInput.addEventListener('change', render);
-  els.scanBtn.addEventListener('click', scanReachabilityRegression);
 
   if (els.togglePanel) {
     els.togglePanel.addEventListener('click', () => {
@@ -183,19 +195,37 @@ function init() {
   }
 
   els.resetViewBtn.addEventListener('click', resetView);
+  els.stepEventsBtn.addEventListener('click', toggleStepInspector);
+  els.stepInspectorClose.addEventListener('click', closeStepInspector);
   els.boards.addEventListener('dblclick', resetView);
+  els.boards.addEventListener('pointerdown', startPanDrag);
+  els.boards.addEventListener('pointermove', updatePanDrag);
+  els.boards.addEventListener('pointerup', endPanDrag);
+  els.boards.addEventListener('pointercancel', endPanDrag);
+  els.boards.addEventListener('lostpointercapture', endPanDrag);
 
   // Floating coord tooltip
   els.boards.addEventListener('mousemove', e => {
+    if (panDrag.active) return;
     const cell = e.target.closest('.cell');
     if (!cell || !cell.dataset.r) {
       els.hoverTip.classList.remove('show');
+      els.hoverTip.classList.remove('eventTip');
       return;
     }
     const r = cell.dataset.r;
     const c = cell.dataset.c;
     const rect = els.boards.getBoundingClientRect();
-    els.hoverTip.textContent = `(${r}, ${c})`;
+    const agentToken = e.target.closest('.agentToken');
+    const agentIdText = agentToken?.dataset.agentId ?? cell.dataset.agentId;
+    const agentId = agentIdText !== undefined ? Number(agentIdText) : null;
+    if (Number.isInteger(agentId)) {
+      els.hoverTip.classList.add('eventTip');
+      els.hoverTip.innerHTML = renderAgentHoverTip(agentId, Number(r), Number(c));
+    } else {
+      els.hoverTip.classList.remove('eventTip');
+      els.hoverTip.textContent = `(${r}, ${c})`;
+    }
     els.hoverTip.style.left = `${e.clientX - rect.left + 14}px`;
     els.hoverTip.style.top  = `${e.clientY - rect.top  + 14}px`;
     els.hoverTip.classList.add('show');
@@ -203,6 +233,7 @@ function init() {
   });
   els.boards.addEventListener('mouseleave', () => {
     els.hoverTip.classList.remove('show');
+    els.hoverTip.classList.remove('eventTip');
   });
 
   // Wheel = zoom around cursor
@@ -351,6 +382,46 @@ function applyPan() {
   els.axisLeftInner.style.transform = `translateY(${ty})`;
 }
 
+function startPanDrag(e) {
+  if (!replay || els.boards.classList.contains('empty')) return;
+  if (e.button !== 0) return;
+  panDrag.active = true;
+  panDrag.pointerId = e.pointerId;
+  panDrag.startX = e.clientX;
+  panDrag.startY = e.clientY;
+  panDrag.originX = state.pan.x;
+  panDrag.originY = state.pan.y;
+  els.boards.classList.add('panning');
+  els.hoverTip.classList.remove('show');
+  if (els.boards.setPointerCapture) {
+    try {
+      els.boards.setPointerCapture(e.pointerId);
+    } catch (_) {
+      // Dragging still works without pointer capture; capture only keeps it smooth off-board.
+    }
+  }
+  e.preventDefault();
+}
+
+function updatePanDrag(e) {
+  if (!panDrag.active || e.pointerId !== panDrag.pointerId) return;
+  state.pan.x = Math.round(panDrag.originX + e.clientX - panDrag.startX);
+  state.pan.y = Math.round(panDrag.originY + e.clientY - panDrag.startY);
+  applyPan();
+  e.preventDefault();
+}
+
+function endPanDrag(e) {
+  if (!panDrag.active) return;
+  if (e.pointerId !== undefined && panDrag.pointerId !== null && e.pointerId !== panDrag.pointerId) return;
+  panDrag.active = false;
+  panDrag.pointerId = null;
+  els.boards.classList.remove('panning');
+  if (e.pointerId !== undefined && els.boards.releasePointerCapture && els.boards.hasPointerCapture?.(e.pointerId)) {
+    els.boards.releasePointerCapture(e.pointerId);
+  }
+}
+
 function centerOn(r, c) {
   if (!replay) return;
   state.zoom = 1;
@@ -429,6 +500,7 @@ function loadReplayData(data, options = {}) {
   if (!options.validated) validateReplay(data);
   stopPlay();
   replay = data;
+  indexReplayEvents();
   step = 0;
   els.slider.max = replay.frames.length - 1;
   els.stepInput.max = replay.frames.length - 1;
@@ -513,8 +585,6 @@ function render() {
   const track = trackedCells();
   const trail = trailCells();
   const coord = highlightCoord;
-  const target = parseCoord(els.targetInput.value);
-  const reachable = els.reachInput.checked ? reachableCells(frame, selectedAgentId()) : new Set();
 
   // Rebuild the board DOM on panSurface
   const card = document.createElement('div');
@@ -547,15 +617,19 @@ function render() {
 
       // Highlights (order matters - later ones paint on top)
       if (trail.has(key)) cell.classList.add('trail');
-      if (reachable.has(key)) cell.classList.add('reachable');
       if (changed.has(key)) cell.classList.add('changed');
       if (track.has(key)) cell.classList.add('track');
       if (coord && coord.r === r && coord.c === c) cell.classList.add('coord');
-      if (target && target.r === r && target.c === c && !reachable.has(key)) cell.classList.add('unreachableTarget');
 
       // Tokens
       if (boxes.has(key)) cell.appendChild(token(boxes.get(key).type, boxColor(boxes.get(key).type)));
-      if (agents.has(key)) cell.appendChild(token(String(agents.get(key).id), agentColor(agents.get(key).id), 'agentToken'));
+      if (agents.has(key)) {
+        const agent = agents.get(key);
+        const agentEl = token(String(agent.id), agentColor(agent.id), 'agentToken');
+        agentEl.dataset.agentId = String(agent.id);
+        cell.dataset.agentId = String(agent.id);
+        cell.appendChild(agentEl);
+      }
 
       board.appendChild(cell);
     }
@@ -568,6 +642,7 @@ function render() {
   els.statusInfo.textContent = '';
 
   renderActions(frame);
+  renderStepInspector(frame);
 }
 
 function isGoalSatisfiedInFrame(frame, r, c, goalType) {
@@ -600,6 +675,362 @@ function renderActions(frame) {
     row.appendChild(right);
     els.actions.appendChild(row);
   }
+}
+
+function toggleStepInspector() {
+  if (!replay) return;
+  els.stepInspector.hidden = !els.stepInspector.hidden;
+  if (!els.stepInspector.hidden) {
+    renderStepInspector(replay.frames[step]);
+  }
+}
+
+function closeStepInspector() {
+  els.stepInspector.hidden = true;
+}
+
+function renderStepInspector(frame) {
+  if (!replay || !frame) {
+    els.stepEventsBtn.hidden = true;
+    closeStepInspector();
+    return;
+  }
+  const events = stepEvents(frame, step);
+  const highlights = stepHighlights(frame, step);
+  const totalEvents = replayEventCount();
+  els.stepEventsBtn.hidden = false;
+  els.stepEventsBtn.textContent = `Highlights ${highlights.length}`;
+  els.stepEventsBtn.classList.toggle('muted', highlights.length === 0);
+
+  if (els.stepInspector.hidden) return;
+
+  els.stepInspectorBody.innerHTML = '';
+  const summary = document.createElement('div');
+  summary.className = 'stepInspectorSummary';
+  summary.textContent = `Step ${step} | ${highlights.length} highlight${highlights.length === 1 ? '' : 's'} here | ${totalEvents} raw events in replay`;
+  els.stepInspectorBody.appendChild(summary);
+
+  if (highlights.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'stepInspectorEmpty';
+    empty.textContent = totalEvents === 0
+      ? 'This replay does not include advanced step events.'
+      : 'No high-signal event on this step. Hover an agent for its current intent and action.';
+    els.stepInspectorBody.appendChild(empty);
+    return;
+  }
+
+  for (const event of highlights) {
+    els.stepInspectorBody.appendChild(renderEventCard(event));
+  }
+}
+
+function stepEvents(frame, stepIndex) {
+  const events = [];
+  collectEvents(events, frame.events);
+  collectEvents(events, frame.diagnostics);
+  collectEvents(events, frame.debugEvents);
+  collectEvents(events, frame.metadata?.events);
+  collectEvents(events, indexedReplayEvents.get(stepIndex));
+  return events;
+}
+
+function stepHighlights(frame, stepIndex) {
+  return stepEvents(frame, stepIndex).filter(isStepHighlight);
+}
+
+function isStepHighlight(event) {
+  if (!event || typeof event !== 'object') return true;
+  const kind = String(event.kind || event.type || '').toLowerCase();
+  if (kind === 'agent-action' || kind === 'agent-intent') return false;
+  if (kind === 'rejected-action') return true;
+  if (event.accepted === false) return true;
+  const severity = String(event.severity || event.level || '').toLowerCase();
+  if (severity.includes('warn') || severity.includes('error') || severity.includes('fail')) return true;
+  return kind.includes('subgoal') || kind.includes('rollback') || kind.includes('regress')
+      || kind.includes('conflict') || kind.includes('block') || kind.includes('seal');
+}
+
+function agentStepEvents(agentId) {
+  if (!replay) return [];
+  const frame = replay.frames[step];
+  if (!frame) return [];
+  return stepEvents(frame, step).filter(event => eventAgentId(event) === agentId);
+}
+
+function eventAgentId(event) {
+  if (!event || typeof event !== 'object') return null;
+  const raw = event.agentId ?? event.agent ?? event.agent_id;
+  if (Number.isInteger(raw)) return raw;
+  if (/^\d+$/.test(String(raw ?? ''))) return Number(raw);
+  const match = String(raw ?? '').match(/^agent\s*(\d+)$/i);
+  return match ? Number(match[1]) : null;
+}
+
+function renderAgentHoverTip(agentId, r, c) {
+  const events = agentStepEvents(agentId);
+  const intent = events.find(isAgentIntentEvent);
+  const action = events.find(isAgentActionEvent);
+  const html = [
+    `<div class="hoverTipTitle"><strong>agent${agentId}</strong><span>(${r}, ${c})</span></div>`
+  ];
+  if (!intent && !action) {
+    html.push('<div class="hoverTipMuted">No intent event on this step</div>');
+    return html.join('');
+  }
+
+  if (intent) {
+    html.push(renderAgentIntentHoverEvent(intent));
+  }
+  if (action) {
+    html.push(renderAgentActionHoverEvent(action));
+  }
+  return html.join('');
+}
+
+function isAgentIntentEvent(event) {
+  return event && typeof event === 'object'
+      && String(event.kind || event.type || '').toLowerCase() === 'agent-intent';
+}
+
+function isAgentActionEvent(event) {
+  if (!event || typeof event !== 'object') return false;
+  const kind = String(event.kind || event.type || '').toLowerCase();
+  return kind === 'agent-action' || kind === 'rejected-action';
+}
+
+function renderAgentIntentHoverEvent(event) {
+  const phase = event.phase || 'unknown';
+  const subgoal = event.subgoal || event.title || 'unknown';
+  const progress = event.stepInSegment && event.segmentSteps
+    ? `${event.stepInSegment}/${event.segmentSteps}`
+    : '';
+  const rows = [
+    '<div class="hoverTipEvent success">',
+    `<div class="hoverTipSection"><strong>Planner intent</strong><span>${escapeHtml(progress || phase)}</span></div>`,
+    hoverField('Phase', phase),
+    hoverField('Subgoal', subgoal),
+    hoverField('Subgoal type', event.subgoalType),
+    hoverField('Goal', event.goal),
+    hoverField('Box type', event.boxType),
+    hoverField('Progress', progress),
+    hoverField('Planned action', event.action),
+    hoverField('Server action', event.actualAction),
+    hoverField('Reason', event.reason),
+    hoverField('Message', event.message)
+  ].filter(Boolean);
+  rows.push('</div>');
+  return rows.join('');
+}
+
+function renderAgentActionHoverEvent(event) {
+  const normalized = normalizeEvent(event);
+  const accepted = event && typeof event === 'object' && event.accepted === false ? 'rejected' : 'accepted';
+  const action = event && typeof event === 'object' && event.action ? event.action : normalized.title;
+  const from = event && typeof event === 'object' ? formatEventValue(event.from) : '';
+  const to = event && typeof event === 'object' ? formatEventValue(event.to) : '';
+  const attemptedTo = event && typeof event === 'object' ? formatEventValue(event.attemptedTo) : '';
+  const boxType = event && typeof event === 'object' ? event.boxType : null;
+  const boxFrom = event && typeof event === 'object' ? formatEventValue(event.boxFrom) : '';
+  const boxTo = event && typeof event === 'object' ? formatEventValue(event.boxTo) : '';
+
+  const rows = [
+    `<div class="hoverTipEvent ${eventKindClass(accepted)}">`,
+    `<div class="hoverTipSection"><strong>Server action</strong><span>${escapeHtml(accepted)}</span></div>`,
+    hoverField('Action', action),
+    hoverField('Result', accepted === 'rejected' ? 'rejected by server' : 'accepted by server'),
+    hoverField('From', from),
+    hoverField('To', to),
+    hoverField('Attempted to', attemptedTo && attemptedTo !== to ? attemptedTo : ''),
+    hoverField('Box type', boxType),
+    hoverField('Box from', boxFrom),
+    hoverField('Box to', boxTo),
+    hoverField('Message', event.message)
+  ].filter(Boolean);
+  rows.push('</div>');
+  return rows.join('');
+}
+
+function hoverField(label, value) {
+  const formatted = formatEventValue(value);
+  if (!formatted) return '';
+  return `<p><strong>${escapeHtml(label)}:</strong> ${escapeHtml(formatted)}</p>`;
+}
+
+function indexReplayEvents() {
+  indexedReplayEvents = new Map();
+  indexedReplayEventTotal = 0;
+  if (!replay) return;
+  for (let i = 0; i < replay.frames.length; i++) {
+    indexedReplayEventTotal += frameLocalEventCount(replay.frames[i]);
+  }
+  if (!Array.isArray(replay.events)) return;
+  for (const event of replay.events) {
+    const index = eventStep(event);
+    if (!Number.isInteger(index) || index < 0 || index >= replay.frames.length) continue;
+    const bucket = indexedReplayEvents.get(index) || [];
+    bucket.push(event);
+    indexedReplayEvents.set(index, bucket);
+    indexedReplayEventTotal++;
+  }
+}
+
+function frameLocalEventCount(frame) {
+  let count = 0;
+  count += eventSourceCount(frame.events);
+  count += eventSourceCount(frame.diagnostics);
+  count += eventSourceCount(frame.debugEvents);
+  count += eventSourceCount(frame.metadata?.events);
+  return count;
+}
+
+function eventSourceCount(source) {
+  if (!source) return 0;
+  return Array.isArray(source) ? source.length : 1;
+}
+
+function collectEvents(target, source) {
+  if (!source) return;
+  if (Array.isArray(source)) {
+    for (const item of source) target.push(item);
+  } else {
+    target.push(source);
+  }
+}
+
+function replayEventCount() {
+  return indexedReplayEventTotal;
+}
+
+function eventStep(event) {
+  if (!event || typeof event !== 'object') return null;
+  for (const key of ['step', 'frame', 'frameIndex', 'tick', 'timestep']) {
+    if (Number.isInteger(event[key])) return event[key];
+  }
+  return null;
+}
+
+function renderEventCard(event) {
+  const normalized = normalizeEvent(event);
+  const card = document.createElement('article');
+  card.className = `stepEventCard ${normalized.kindClass}`;
+
+  const header = document.createElement('div');
+  header.className = 'stepEventHeader';
+  const title = document.createElement('strong');
+  title.textContent = normalized.title;
+  const kind = document.createElement('span');
+  kind.textContent = normalized.kind;
+  header.appendChild(title);
+  header.appendChild(kind);
+  card.appendChild(header);
+
+  if (normalized.message) {
+    const message = document.createElement('p');
+    message.className = 'stepEventMessage';
+    message.textContent = normalized.message;
+    card.appendChild(message);
+  }
+
+  if (normalized.fields.length > 0) {
+    const fields = document.createElement('dl');
+    fields.className = 'stepEventFields';
+    for (const [key, value] of normalized.fields) {
+      const dt = document.createElement('dt');
+      dt.textContent = key;
+      const dd = document.createElement('dd');
+      dd.textContent = formatEventValue(value);
+      fields.appendChild(dt);
+      fields.appendChild(dd);
+    }
+    card.appendChild(fields);
+  }
+
+  return card;
+}
+
+function normalizeEvent(event) {
+  if (typeof event === 'string') {
+    return {
+      kind: 'note',
+      kindClass: 'note',
+      title: 'Event',
+      message: event,
+      fields: [],
+    };
+  }
+  if (!event || typeof event !== 'object') {
+    return {
+      kind: 'note',
+      kindClass: 'note',
+      title: 'Event',
+      message: String(event),
+      fields: [],
+    };
+  }
+  const kind = String(event.kind || event.type || event.category || event.severity || 'event');
+  const title = String(event.title || event.label || event.name || titleCase(kind));
+  const message = event.message || event.reason || event.summary || event.detail || '';
+  const priority = event.severity || event.priority || event.level || kind;
+  const fields = [];
+  const preferred = [
+    'agent', 'agentId', 'box', 'boxType', 'phase',
+    'subgoal', 'subgoalType', 'verdict', 'action', 'actualAction',
+    'stepInSegment', 'segmentSteps', 'from', 'to', 'activeSubgoal',
+    'blocker', 'blocked', 'target', 'goal', 'cause',
+  ];
+  const seen = new Set(['kind', 'type', 'category', 'severity', 'priority', 'level', 'title', 'label', 'name', 'message', 'reason', 'summary', 'detail', 'step', 'frame', 'frameIndex', 'tick', 'timestep']);
+  for (const key of preferred) {
+    if (event[key] !== undefined) {
+      fields.push([labelForEventKey(key), event[key]]);
+      seen.add(key);
+    }
+  }
+  for (const [key, value] of Object.entries(event)) {
+    if (seen.has(key) || value === undefined || value === null) continue;
+    if (fields.length >= 12) break;
+    fields.push([labelForEventKey(key), value]);
+  }
+  return {
+    kind,
+    kindClass: eventKindClass(priority),
+    title,
+    message: String(message || ''),
+    fields,
+  };
+}
+
+function eventKindClass(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw.includes('fail') || raw.includes('error') || raw.includes('reject') || raw.includes('block')) return 'danger';
+  if (raw.includes('warn') || raw.includes('partial') || raw.includes('retry')) return 'warning';
+  if (raw.includes('success') || raw.includes('ok') || raw.includes('solve') || raw.includes('accept')) return 'success';
+  return 'note';
+}
+
+function labelForEventKey(key) {
+  return String(key)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, ch => ch.toUpperCase());
+}
+
+function titleCase(value) {
+  return labelForEventKey(String(value).replace(/[-:]/g, ' '));
+}
+
+function formatEventValue(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    return value.map(formatEventValue).join(', ');
+  }
+  if (typeof value === 'object') {
+    if (Number.isInteger(value.r) && Number.isInteger(value.c)) return `(${value.r}, ${value.c})`;
+    if (Number.isInteger(value.row) && Number.isInteger(value.col)) return `(${value.row}, ${value.col})`;
+    return JSON.stringify(value);
+  }
+  return String(value);
 }
 
 // ---- Playback --------------------------------------------------------------
@@ -701,116 +1132,10 @@ function trailCells() {
   return out;
 }
 
-function selectedAgentId() {
-  const q = els.trackInput.value.trim().toLowerCase();
-  if (!q.startsWith('agent')) return null;
-  const id = Number(q.replace('agent', ''));
-  return Number.isFinite(id) ? id : null;
-}
-
 function parseCoord(text) {
   const m = String(text || '').trim().match(/^\(?\s*(\d+)\s*[, ]\s*(\d+)\s*\)?$/);
   if (!m) return null;
   return { r: Number(m[1]), c: Number(m[2]) };
-}
-
-function reachableCells(frame, agentId) {
-  const out = new Set();
-  if (agentId == null || !frame) return out;
-  const agent = frame.agents.find(a => a.id === agentId);
-  if (!agent) return out;
-  const blocked = new Set(frame.boxes.map(b => `${b.r},${b.c}`));
-  for (const a of frame.agents) {
-    if (a.id !== agentId) blocked.add(`${a.r},${a.c}`);
-  }
-  const q = [{ r: agent.r, c: agent.c }];
-  out.add(`${agent.r},${agent.c}`);
-  for (let head = 0; head < q.length; head++) {
-    const p = q[head];
-    for (const d of [[1,0],[-1,0],[0,1],[0,-1]]) {
-      const r = p.r + d[0], c = p.c + d[1];
-      const key = `${r},${c}`;
-      if (out.has(key) || isWall(r, c) || blocked.has(key)) continue;
-      out.add(key);
-      q.push({ r, c });
-    }
-  }
-  return out;
-}
-
-function isWall(r, c) {
-  return r < 0 || c < 0 || r >= replay.level.rows || c >= replay.level.cols
-      || replay.level.walls[r][c] === '+';
-}
-
-// ---- Reachability regression scan ------------------------------------------
-
-function scanReachabilityRegression() {
-  if (!replay) return;
-  const agentId = selectedAgentId();
-  const target = parseCoord(els.targetInput.value) || parseCoord(els.coordInput.value);
-  els.events.innerHTML = '';
-  if (agentId == null || !target) {
-    els.events.textContent = 'Set Track object to agentN and target to r,c.';
-    return;
-  }
-  const targetKey = `${target.r},${target.c}`;
-  const rows = [];
-  let prevCan = reachableCells(replay.frames[0], agentId).has(targetKey);
-  for (let i = 1; i < replay.frames.length; i++) {
-    const can = reachableCells(replay.frames[i], agentId).has(targetKey);
-    if (prevCan && !can) {
-      rows.push(describeRegression(i, agentId, targetKey));
-    }
-    prevCan = can;
-  }
-  if (rows.length === 0) {
-    els.events.textContent = `No reachable -> unreachable transition found for agent${agentId} to (${target.r},${target.c}).`;
-    return;
-  }
-  for (const row of rows.slice(0, 20)) {
-    const el = div('eventRow', '');
-    el.innerHTML = `<b>step ${row.step}</b> agent${agentId} lost target ${escapeHtml(targetKey)}<br>${escapeHtml(row.reason)}<br>${escapeHtml(row.actions)}`;
-    el.addEventListener('click', () => setStep(row.step));
-    els.events.appendChild(el);
-  }
-}
-
-function describeRegression(stepIdx, agentId, targetKey) {
-  const prev = replay.frames[stepIdx - 1];
-  const cur = replay.frames[stepIdx];
-  const moved = movedObjects(prev, cur);
-  const goalInfo = goalMap();
-  const interesting = moved
-    .filter(x => x.kind === 'box' || x.kind === 'agent')
-    .map(x => `${x.kind}${x.id} ${x.from}->${x.to}${goalInfo.has(x.to) ? ' on-goal ' + goalInfo.get(x.to) : ''}`);
-  const actions = (cur.actions || []).map((a, i) => `${i}:${a}${cur.accepted && cur.accepted[i] ? '' : ' rejected'}`).join(' | ');
-  return {
-    step: stepIdx,
-    reason: interesting.length ? interesting.join('; ') : 'No moved object identified; inspect changed cells.',
-    actions
-  };
-}
-
-function movedObjects(prev, cur) {
-  const out = [];
-  const prevAgents = new Map(prev.agents.map(a => [a.id, a]));
-  for (const a of cur.agents) {
-    const p = prevAgents.get(a.id);
-    if (!p || p.r !== a.r || p.c !== a.c) {
-      out.push({ kind: 'agent', id: a.id, from: p ? `${p.r},${p.c}` : '?', to: `${a.r},${a.c}` });
-    }
-  }
-  const prevBoxes = new Set(prev.boxes.map(b => `${b.type}@${b.r},${b.c}`));
-  const curBoxes = new Set(cur.boxes.map(b => `${b.type}@${b.r},${b.c}`));
-  for (const b of cur.boxes) {
-    const here = `${b.type}@${b.r},${b.c}`;
-    if (prevBoxes.has(here)) continue;
-    const candidates = prev.boxes.filter(x => x.type === b.type && !curBoxes.has(`${x.type}@${x.r},${x.c}`));
-    const from = candidates.length ? `${candidates[0].r},${candidates[0].c}` : '?';
-    out.push({ kind: 'box', id: b.type, from, to: `${b.r},${b.c}` });
-  }
-  return out;
 }
 
 // ---- DOM utilities ---------------------------------------------------------

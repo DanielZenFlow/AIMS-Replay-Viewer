@@ -4,6 +4,8 @@ AIMS Replay Viewer is a standalone recorder and browser-based viewer for the
 MAvis Hospital domain. It is meant for debugging MAvis clients without asking
 other people to adapt their own JSON generation code.
 
+Current release: `v1.0.1`.
+
 The core idea is simple: the MAvis server already speaks a stable text protocol
 with every Hospital client. This tool sits between `server.jar` and the user's
 normal client, forwards the protocol in both directions, records what happened,
@@ -163,9 +165,9 @@ The viewer assets live next to it:
 
 ```text
 viewer-assets/
-  latest-replay.js
   viewer.css
   viewer.js
+  latest-replay.js  (generated locally when a replay is recorded)
 ```
 
 The viewer supports:
@@ -178,8 +180,9 @@ The viewer supports:
 - playback speed control;
 - object tracking by agent or box;
 - coordinate highlighting;
-- basic reachability inspection;
-- suspicious event listing.
+- detailed agent hover cards for planner intent, phase, subgoal, progress, planned action, server action, and movement facts;
+- a lower-right Highlights inspector for rejected actions and other high-signal current-step events;
+- an updated first-run tutorial and help dialog that match the current viewer UI.
 
 ## Output Layout
 
@@ -337,7 +340,7 @@ mvn -q -DskipTests package
 The Maven build writes:
 
 ```text
-target\aims-replay-viewer-0.1.0.jar
+target\aims-replay-viewer-1.0.1.jar
 ```
 
 For a simple release folder, copy that jar to:
@@ -345,6 +348,16 @@ For a simple release folder, copy that jar to:
 ```text
 aims-replay-viewer.jar
 ```
+
+## Release Notes
+
+### v1.0.1
+
+- Removes the low-value reachability target scanner from the viewer.
+- Adds field-labeled agent hover details for planner intent, phase, subgoal, planned action, server action, and movement facts.
+- Adds/keeps the lower-right Highlights inspector for high-signal current-step events.
+- Updates the first-run tutorial and help dialog to match the current UI.
+- Keeps replay/debug outputs as local ignored artifacts so release folders stay clean.
 
 ## Generated Files
 
