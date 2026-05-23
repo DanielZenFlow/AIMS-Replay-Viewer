@@ -11,7 +11,11 @@ public final class ViewerExporter {
     private static final String ASSET_DIR = "viewer-assets";
     private static final String[] ASSET_FILES = {
             "viewer.css",
-            "viewer.js"
+            "viewer.js",
+            "favicon.ico",
+            "favicon.png",
+            "favicon-32.png",
+            "apple-touch-icon.png"
     };
 
     public void export(Path viewerDir, String replayJson) throws IOException {
@@ -40,6 +44,9 @@ public final class ViewerExporter {
         }
 
         String html = readResource(loader, "replay-viewer/index.html")
+                .replace("href=\"favicon.ico\"", "href=\"" + ASSET_DIR + "/favicon.ico\"")
+                .replace("href=\"favicon.png\"", "href=\"" + ASSET_DIR + "/favicon.png\"")
+                .replace("href=\"apple-touch-icon.png\"", "href=\"" + ASSET_DIR + "/apple-touch-icon.png\"")
                 .replace("href=\"viewer.css\"", "href=\"" + ASSET_DIR + "/viewer.css\"")
                 .replace("src=\"latest-replay.js\"", "src=\"" + ASSET_DIR + "/latest-replay.js\"")
                 .replace("src=\"viewer.js\"", "src=\"" + ASSET_DIR + "/viewer.js\"");

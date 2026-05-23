@@ -4,7 +4,7 @@ AIMS Replay Viewer is a standalone recorder and browser-based viewer for the
 MAvis Hospital domain. It is meant for debugging MAvis clients without asking
 other people to adapt their own JSON generation code.
 
-Current release: `v1.0.1`.
+Current release: `v1.0.2`.
 
 The core idea is simple: the MAvis server already speaks a stable text protocol
 with every Hospital client. This tool sits between `server.jar` and the user's
@@ -174,6 +174,7 @@ The viewer supports:
 
 - loading the latest generated replay automatically;
 - loading another replay JSON file manually;
+- reopening the last manually loaded replay after a browser refresh;
 - drag-and-drop JSON loading;
 - step-by-step playback;
 - play/pause;
@@ -183,6 +184,18 @@ The viewer supports:
 - detailed agent hover cards for planner intent, phase, subgoal, progress, planned action, server action, and movement facts;
 - a lower-right Highlights inspector for rejected actions and other high-signal current-step events;
 - an updated first-run tutorial and help dialog that match the current viewer UI.
+
+### Browser Refresh Behavior
+
+When a user manually loads or drops a replay JSON file, the viewer remembers that
+JSON in browser storage. Refreshing the page reopens the same replay
+automatically, which is useful when repeatedly adjusting the viewer or reopening
+the browser during debugging.
+
+Large replay files are stored with IndexedDB instead of normal `localStorage`.
+This avoids the small storage limit that often affects multi-megabyte replay
+JSON files. If browser storage is blocked, the viewer still works normally; the
+user simply needs to choose the replay file again after a refresh.
 
 ## Output Layout
 
@@ -340,7 +353,7 @@ mvn -q -DskipTests package
 The Maven build writes:
 
 ```text
-target\aims-replay-viewer-1.0.1.jar
+target\aims-replay-viewer-1.0.2.jar
 ```
 
 For a simple release folder, copy that jar to:
@@ -351,33 +364,24 @@ aims-replay-viewer.jar
 
 ## Release Notes
 
+### v1.0.2
+
+- The browser viewer now remembers the last manually opened replay JSON and
+  restores it after a page refresh. This is stored in browser storage, so users
+  do not need to select the same large replay file again while debugging.
+- The viewer UI from the project-integrated reviewer has been synced into the
+  standalone release: agent monitoring, stable log sizing, `Lock View`, split
+  interface/log font settings, tutorial updates, and the latest lower-right
+  controls are now included in the public package.
+- The release version and Maven artifact version are updated to `1.0.2`.
+
 ### v1.0.1
 
 - Removes the low-value reachability target scanner from the viewer.
 - Adds field-labeled agent hover details for planner intent, phase, subgoal, planned action, server action, and movement facts.
 - Adds/keeps the lower-right Highlights inspector for high-signal current-step events.
 - Updates the first-run tutorial and help dialog to match the current UI.
-- Keeps replay/debug outputs as local ignored artifacts so release folders stay clean.
-
-## Generated Files
-
-These files are generated locally and are intentionally ignored by git:
-
-```text
-target/
-config.properties
-replays/
-logs/
-viewer-assets/latest-replay.js
-```
-
-`config.properties` stores the local project root chosen during setup. It should
-not be committed because it is specific to one machine.
-
-`AIMS-Replay-Viewer.html`, `viewer-assets/viewer.css`, and
-`viewer-assets/viewer.js` are kept in the repository root as the always-available
-browser viewer shell. Recording or conversion refreshes
-`viewer-assets/latest-replay.js` with the latest replay data.
+- Keeps replay/debug outputs local so release folders stay clean.
 
 ## Troubleshooting
 

@@ -23,8 +23,26 @@ let notificationTimer = null;
 let tutorialStepIndex = 0;
 let indexedReplayEvents = new Map();
 let indexedReplayEventTotal = 0;
+let focusedAgentId = null;
+let lockViewEnabled = true;
+let agentPanelHeight = 260;
 
 const TUTORIAL_STORAGE_KEY = 'aims-replay-viewer:onboarding-seen';
+const FONT_SIZE_STORAGE_KEY = 'aims-replay-viewer:font-size-px';
+const LOG_FONT_SIZE_STORAGE_KEY = 'aims-replay-viewer:log-font-size-px';
+const LAST_REPLAY_DB_NAME = 'aims-replay-viewer';
+const LAST_REPLAY_DB_VERSION = 1;
+const LAST_REPLAY_STORE_NAME = 'viewer-state';
+const LAST_REPLAY_KEY = 'last-opened-replay';
+const LAST_REPLAY_LOCAL_STORAGE_KEY = 'aims-replay-viewer:last-opened-replay';
+const DEFAULT_UI_FONT_SIZE = 12;
+const DEFAULT_LOG_FONT_SIZE = 11;
+const MIN_UI_FONT_SIZE = 9;
+const MAX_UI_FONT_SIZE = 24;
+const MIN_LOG_FONT_SIZE = 8;
+const MAX_LOG_FONT_SIZE = 24;
+const DEFAULT_AGENT_PANEL_HEIGHT = 260;
+const MAX_AGENT_PANEL_HEIGHT = 420;
 const tutorialSteps = [
   {
     title: 'Load a replay',
@@ -45,6 +63,14 @@ const tutorialSteps = [
   {
     title: 'Inspect agent intent',
     body: 'Hover an agent token to see field-labeled planner intent: phase, subgoal, subgoal type, progress, planned action, server action, and movement facts.'
+  },
+  {
+    title: 'Monitor one agent',
+    body: 'Use the lower-right Agent menu to pin one agent. The monitor keeps action, intent, and movement facts visible; use Lock View at the bottom of the monitor to follow that agent on the board.'
+  },
+  {
+    title: 'Adjust text',
+    body: 'Use the lower-right px control to open Display settings. Interface font size changes the page chrome; Log font size changes Highlights and the pinned agent monitor.'
   },
   {
     title: 'Review highlights',
@@ -83,6 +109,20 @@ const els = {
   zoomInfo:      document.getElementById('zoomInfo'),
   resetViewBtn:  document.getElementById('resetView'),
   stepEventsBtn: document.getElementById('stepEventsBtn'),
+  agentMenuBtn: document.getElementById('agentMenuBtn'),
+  agentMenuPanel: document.getElementById('agentMenuPanel'),
+  agentMenuList: document.getElementById('agentMenuList'),
+  agentActionPanel: document.getElementById('agentActionPanel'),
+  agentActionClose: document.getElementById('agentActionClose'),
+  agentActionTitle: document.getElementById('agentActionTitle'),
+  agentActionBody: document.getElementById('agentActionBody'),
+  lockViewInput: document.getElementById('lockViewInput'),
+  fontSettingsBtn: document.getElementById('fontSettingsBtn'),
+  fontSettingsDialog: document.getElementById('fontSettingsDialog'),
+  uiFontSizeInput: document.getElementById('uiFontSizeInput'),
+  logFontSizeInput: document.getElementById('logFontSizeInput'),
+  fontSettingsResetBtn: document.getElementById('fontSettingsResetBtn'),
+  fontSettingsCloseBtn: document.getElementById('fontSettingsCloseBtn'),
   stepInspector: document.getElementById('stepInspector'),
   stepInspectorClose: document.getElementById('stepInspectorClose'),
   stepInspectorBody: document.getElementById('stepInspectorBody'),
@@ -143,11 +183,13 @@ function init() {
     window.addEventListener('keydown', e => {
       if (e.key === 'Escape' && !els.helpDialog.hidden) closeHelpDialog();
       if (e.key === 'Escape' && els.onboardingDialog && !els.onboardingDialog.hidden) finishTutorial();
+      if (e.key === 'Escape' && els.fontSettingsDialog && !els.fontSettingsDialog.hidden) hideFontSettingsDialog();
     });
   }
 
   initTutorial();
   initNotifications();
+  initFontSettings();
 
   els.fileInput.addEventListener('change', e => {
     const file = e.target.files && e.target.files[0];
@@ -196,7 +238,30 @@ function init() {
 
   els.resetViewBtn.addEventListener('click', resetView);
   els.stepEventsBtn.addEventListener('click', toggleStepInspector);
+  els.agentMenuBtn.addEventListener('click', toggleAgentMenu);
+  els.agentMenuList.addEventListener('click', event => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest('button[data-agent-id]');
+    if (!button) return;
+    const raw = button.dataset.agentId;
+    selectAgentFocus(Number(raw));
+  });
+  els.agentActionClose.addEventListener('click', clearAgentFocus);
+  els.lockViewInput.addEventListener('change', () => {
+    setLockView(els.lockViewInput.checked);
+  });
+  els.fontSettingsBtn.addEventListener('click', showFontSettingsDialog);
+  els.fontSettingsCloseBtn.addEventListener('click', hideFontSettingsDialog);
+  els.fontSettingsResetBtn.addEventListener('click', resetFontSettings);
+  els.fontSettingsDialog.addEventListener('click', event => {
+    if (event.target === els.fontSettingsDialog) hideFontSettingsDialog();
+  });
   els.stepInspectorClose.addEventListener('click', closeStepInspector);
+  document.addEventListener('click', event => {
+    if (!(event.target instanceof Element) || !event.target.closest('#agentMenuPanel, #agentMenuBtn')) {
+      closeAgentMenu();
+    }
+  });
   els.boards.addEventListener('dblclick', resetView);
   els.boards.addEventListener('pointerdown', startPanDrag);
   els.boards.addEventListener('pointermove', updatePanDrag);
@@ -251,16 +316,7 @@ function init() {
   applyZoom();
   applyPan();
 
-  if (window.DEFAULT_REPLAY) {
-    try {
-      loadReplayData(window.DEFAULT_REPLAY);
-    } catch (error) {
-      showError(errorMessage(error), 'Unable to load replay');
-      render();
-    }
-  } else {
-    render();
-  }
+  restoreInitialReplay();
 
   if (localStorageAvailable() && localStorage.getItem(TUTORIAL_STORAGE_KEY) !== '1') {
     showTutorial();
@@ -336,6 +392,84 @@ function initNotifications() {
   els.notificationCloseBtn.addEventListener('click', clearNotification);
 }
 
+function initFontSettings() {
+  const savedUi = localStorageAvailable() ? Number(localStorage.getItem(FONT_SIZE_STORAGE_KEY)) : NaN;
+  const savedLog = localStorageAvailable() ? Number(localStorage.getItem(LOG_FONT_SIZE_STORAGE_KEY)) : NaN;
+  const uiSize = clampUIFontSize(Number.isFinite(savedUi) ? savedUi : DEFAULT_UI_FONT_SIZE);
+  const logSize = clampLogFontSize(Number.isFinite(savedLog) ? savedLog : DEFAULT_LOG_FONT_SIZE);
+  applyUIFontSize(uiSize);
+  applyLogFontSize(logSize);
+  els.uiFontSizeInput.value = String(uiSize);
+  els.logFontSizeInput.value = String(logSize);
+  els.uiFontSizeInput.addEventListener('input', () => {
+    const next = clampUIFontSize(Number(els.uiFontSizeInput.value));
+    applyUIFontSize(next);
+  });
+  els.uiFontSizeInput.addEventListener('change', () => {
+    const next = clampUIFontSize(Number(els.uiFontSizeInput.value));
+    els.uiFontSizeInput.value = String(next);
+    applyUIFontSize(next);
+  });
+  els.logFontSizeInput.addEventListener('input', () => {
+    const next = clampLogFontSize(Number(els.logFontSizeInput.value));
+    applyLogFontSize(next);
+  });
+  els.logFontSizeInput.addEventListener('change', () => {
+    const next = clampLogFontSize(Number(els.logFontSizeInput.value));
+    els.logFontSizeInput.value = String(next);
+    applyLogFontSize(next);
+  });
+}
+
+function showFontSettingsDialog() {
+  closeAgentMenu();
+  els.fontSettingsDialog.hidden = false;
+  els.uiFontSizeInput.focus();
+  els.uiFontSizeInput.select();
+}
+
+function hideFontSettingsDialog() {
+  els.fontSettingsDialog.hidden = true;
+}
+
+function resetFontSettings() {
+  els.uiFontSizeInput.value = String(DEFAULT_UI_FONT_SIZE);
+  els.logFontSizeInput.value = String(DEFAULT_LOG_FONT_SIZE);
+  applyUIFontSize(DEFAULT_UI_FONT_SIZE);
+  applyLogFontSize(DEFAULT_LOG_FONT_SIZE);
+}
+
+function clampUIFontSize(value) {
+  if (!Number.isFinite(value)) return DEFAULT_UI_FONT_SIZE;
+  return Math.max(MIN_UI_FONT_SIZE, Math.min(MAX_UI_FONT_SIZE, Math.round(value)));
+}
+
+function clampLogFontSize(value) {
+  if (!Number.isFinite(value)) return DEFAULT_LOG_FONT_SIZE;
+  return Math.max(MIN_LOG_FONT_SIZE, Math.min(MAX_LOG_FONT_SIZE, Math.round(value)));
+}
+
+function applyUIFontSize(size) {
+  const next = clampUIFontSize(size);
+  document.documentElement.style.setProperty('--ui-font-size', `${next}px`);
+  els.fontSettingsBtn.textContent = `${next}px`;
+  resetAgentPanelHeight();
+  updateAgentActionPanelLayout();
+  if (localStorageAvailable()) {
+    localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(next));
+  }
+}
+
+function applyLogFontSize(size) {
+  const next = clampLogFontSize(size);
+  document.documentElement.style.setProperty('--log-font-size', `${next}px`);
+  resetAgentPanelHeight();
+  updateAgentActionPanelLayout();
+  if (localStorageAvailable()) {
+    localStorage.setItem(LOG_FONT_SIZE_STORAGE_KEY, String(next));
+  }
+}
+
 function showError(message, title = 'Something needs attention') {
   if (!els.notificationToast) return;
   els.notificationTitle.textContent = title;
@@ -363,6 +497,105 @@ function localStorageAvailable() {
   } catch (_) {
     return false;
   }
+}
+
+async function restoreInitialReplay() {
+  try {
+    const saved = await readLastOpenedReplay();
+    if (saved?.text) {
+      const data = JSON.parse(saved.text);
+      loadReplayData(data, { validated: false });
+      return;
+    }
+  } catch (error) {
+    console.warn('Unable to restore last opened replay:', error);
+  }
+
+  if (window.DEFAULT_REPLAY) {
+    try {
+      loadReplayData(window.DEFAULT_REPLAY);
+    } catch (error) {
+      showError(errorMessage(error), 'Unable to load replay');
+      render();
+    }
+  } else {
+    render();
+  }
+}
+
+async function saveLastOpenedReplay(text, name = '') {
+  const record = {
+    text,
+    name,
+    savedAt: new Date().toISOString(),
+  };
+  try {
+    await writeReplayStorage(record);
+  } catch (error) {
+    if (!localStorageAvailable()) throw error;
+    localStorage.setItem(LAST_REPLAY_LOCAL_STORAGE_KEY, JSON.stringify(record));
+  }
+}
+
+async function readLastOpenedReplay() {
+  try {
+    const record = await readReplayStorage();
+    if (record?.text) return record;
+  } catch (error) {
+    console.warn('IndexedDB replay restore unavailable:', error);
+  }
+  if (!localStorageAvailable()) return null;
+  const raw = localStorage.getItem(LAST_REPLAY_LOCAL_STORAGE_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
+
+function openReplayStorage() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) {
+      reject(new Error('IndexedDB is not available.'));
+      return;
+    }
+    const request = indexedDB.open(LAST_REPLAY_DB_NAME, LAST_REPLAY_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(LAST_REPLAY_STORE_NAME)) {
+        db.createObjectStore(LAST_REPLAY_STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Unable to open replay storage.'));
+  });
+}
+
+async function writeReplayStorage(record) {
+  const db = await openReplayStorage();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LAST_REPLAY_STORE_NAME, 'readwrite');
+    tx.objectStore(LAST_REPLAY_STORE_NAME).put(record, LAST_REPLAY_KEY);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error || new Error('Unable to save replay storage.'));
+    };
+  });
+}
+
+async function readReplayStorage() {
+  const db = await openReplayStorage();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LAST_REPLAY_STORE_NAME, 'readonly');
+    const request = tx.objectStore(LAST_REPLAY_STORE_NAME).get(LAST_REPLAY_KEY);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error || new Error('Unable to read replay storage.'));
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error || new Error('Unable to read replay storage.'));
+    };
+  });
 }
 
 // ---- Zoom / Pan -----------------------------------------------------------
@@ -422,18 +655,28 @@ function endPanDrag(e) {
   }
 }
 
-function centerOn(r, c) {
+function centerOn(r, c, resetZoom = true) {
   if (!replay) return;
-  state.zoom = 1;
-  applyZoom();
+  if (resetZoom) {
+    state.zoom = 1;
+    applyZoom();
+  }
   requestAnimationFrame(() => {
-    const cellSize = BASE_CELL;
+    const cellSize = Math.round(BASE_CELL * state.zoom);
     const cellCenterX = 1 + c * (cellSize + 1) + cellSize / 2;
     const cellCenterY = 1 + r * (cellSize + 1) + cellSize / 2;
     state.pan.x = Math.round(els.panViewport.clientWidth / 2 - cellCenterX);
     state.pan.y = Math.round(els.panViewport.clientHeight / 2 - cellCenterY);
     applyPan();
   });
+}
+
+function followFocusedAgent() {
+  if (!lockViewEnabled || !replay || focusedAgentId == null) return;
+  const frame = replay.frames[step];
+  const agent = frame?.agents?.find(item => item.id === focusedAgentId);
+  if (!agent) return;
+  centerOn(agent.r, agent.c, false);
 }
 
 function resetView() {
@@ -489,6 +732,9 @@ async function loadFile(file) {
       return;
     }
     loadReplayData(data, { validated: true });
+    saveLastOpenedReplay(text, file.name).catch(error => {
+      console.warn('Unable to remember last opened replay:', error);
+    });
   } catch (error) {
     showError(errorMessage(error), 'Unable to load replay');
   } finally {
@@ -506,6 +752,7 @@ function loadReplayData(data, options = {}) {
   els.stepInput.max = replay.frames.length - 1;
   const s = replay.summary || {};
   els.meta.innerHTML = `<b>${escapeHtml(replay.level.name)}</b><br>${replay.level.rows}x${replay.level.cols}, ${replay.frames.length} frames<br>${escapeHtml(s.outcome || 'unknown')} | ${s.executedSteps ?? 0} steps | ${s.satisfiedBoxGoals ?? 0}/${s.totalBoxGoals ?? 0} box goals<br>${escapeHtml(replay.generatedAt || '')}`;
+  populateAgentFocusMenu();
   buildBoard();
   render();
   if (els.autoPlayInput.checked) startPlay();
@@ -566,6 +813,10 @@ function render() {
     empty.textContent = 'Drop a replay JSON file to begin.';
     els.boardWrap.appendChild(empty);
     els.statusInfo.textContent = '';
+    els.agentMenuBtn.hidden = true;
+    closeAgentMenu();
+    els.agentActionPanel.hidden = true;
+    els.boardWrap.classList.remove('agentPanelOpen', 'agentMenuOpen');
     return;
   }
   els.boards.classList.remove('empty');
@@ -643,6 +894,8 @@ function render() {
 
   renderActions(frame);
   renderStepInspector(frame);
+  renderAgentActionPanel();
+  followFocusedAgent();
 }
 
 function isGoalSatisfiedInFrame(frame, r, c, goalType) {
@@ -675,6 +928,237 @@ function renderActions(frame) {
     row.appendChild(right);
     els.actions.appendChild(row);
   }
+}
+
+function populateAgentFocusMenu() {
+  const ids = agentIds();
+  const previous = focusedAgentId;
+  els.agentMenuList.innerHTML = '';
+  focusedAgentId = ids.includes(previous) ? previous : null;
+
+  for (const id of ids) {
+    els.agentMenuList.appendChild(agentMenuItem(String(id), `agent${id}`, 'Pin, center, and follow this agent', focusedAgentId === id));
+  }
+  els.agentMenuBtn.hidden = ids.length === 0;
+  closeAgentMenu();
+  updateAgentMenuButton();
+}
+
+function agentMenuItem(value, title, body, active) {
+  const item = document.createElement('li');
+  if (active) item.classList.add('active');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.agentId = value;
+  button.setAttribute('aria-pressed', active ? 'true' : 'false');
+
+  const badge = document.createElement('span');
+  badge.className = 'agentMenuBadge';
+  badge.textContent = value;
+  const copy = document.createElement('span');
+  copy.className = 'agentMenuCopy';
+  const strong = document.createElement('strong');
+  strong.textContent = title;
+  const small = document.createElement('small');
+  small.textContent = body;
+  copy.appendChild(strong);
+  copy.appendChild(small);
+  button.appendChild(badge);
+  button.appendChild(copy);
+  item.appendChild(button);
+  return item;
+}
+
+function updateAgentMenuButton() {
+  els.agentMenuBtn.textContent = focusedAgentId == null ? 'Agent' : `agent${focusedAgentId}`;
+  els.agentMenuBtn.classList.toggle('active', focusedAgentId != null);
+}
+
+function toggleAgentMenu() {
+  if (els.agentMenuBtn.hidden) return;
+  const shouldOpen = els.agentMenuPanel.hidden;
+  els.agentMenuPanel.hidden = !shouldOpen;
+  els.boardWrap.classList.toggle('agentMenuOpen', shouldOpen);
+  els.agentMenuBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  if (shouldOpen) {
+    hideFontSettingsDialog();
+  }
+}
+
+function closeAgentMenu() {
+  els.agentMenuPanel.hidden = true;
+  els.boardWrap.classList.remove('agentMenuOpen');
+  els.agentMenuBtn.setAttribute('aria-expanded', 'false');
+}
+
+function selectAgentFocus(agentId) {
+  const nextAgentId = Number.isInteger(agentId) ? agentId : null;
+  const agentChanged = focusedAgentId !== nextAgentId;
+  focusedAgentId = nextAgentId;
+  if (focusedAgentId != null) {
+    setLockView(true, false);
+  }
+  if (agentChanged) {
+    resetAgentPanelHeight();
+  }
+  for (const item of els.agentMenuList.querySelectorAll('li')) {
+    const button = item.querySelector('button[data-agent-id]');
+    const raw = button?.dataset.agentId;
+    const active = focusedAgentId != null && raw === String(focusedAgentId);
+    item.classList.toggle('active', active);
+    button?.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+  updateAgentMenuButton();
+  closeAgentMenu();
+  renderAgentActionPanel();
+  followFocusedAgent();
+}
+
+function setLockView(enabled, followNow = true) {
+  lockViewEnabled = Boolean(enabled);
+  els.lockViewInput.checked = lockViewEnabled;
+  if (lockViewEnabled && followNow) followFocusedAgent();
+}
+
+function agentIds() {
+  if (!replay || !Array.isArray(replay.frames) || replay.frames.length === 0) return [];
+  const ids = new Set();
+  for (const frame of replay.frames) {
+    for (const agent of frame.agents || []) {
+      if (Number.isInteger(agent.id)) ids.add(agent.id);
+    }
+    if (ids.size > 0) break;
+  }
+  return [...ids].sort((a, b) => a - b);
+}
+
+function clearAgentFocus() {
+  selectAgentFocus(null);
+}
+
+function renderAgentActionPanel() {
+  if (!replay || focusedAgentId == null) {
+    els.agentActionPanel.hidden = true;
+    els.boardWrap.classList.remove('agentPanelOpen');
+    clearAgentPanelStackOffset();
+    return;
+  }
+  const frame = replay.frames[step];
+  if (!frame) {
+    els.agentActionPanel.hidden = true;
+    els.boardWrap.classList.remove('agentPanelOpen');
+    clearAgentPanelStackOffset();
+    return;
+  }
+
+  const events = agentStepEvents(focusedAgentId);
+  const intent = events.find(isAgentIntentEvent);
+  const actionEvent = events.find(isAgentActionEvent);
+  const actionText = frame.actions && frame.actions[focusedAgentId]
+    ? frame.actions[focusedAgentId]
+    : actionEvent?.action || 'NoOp';
+  const accepted = frame.accepted && focusedAgentId < frame.accepted.length
+    ? frame.accepted[focusedAgentId]
+    : actionEvent?.accepted !== false;
+  const pos = (frame.agents || []).find(agent => agent.id === focusedAgentId);
+
+  els.agentActionTitle.textContent = `agent${focusedAgentId}`;
+  els.agentActionBody.innerHTML = '';
+  const fields = document.createElement('dl');
+  fields.className = 'agentActionGrid';
+  appendAgentMonitorField(fields, 'Step', String(step));
+  appendAgentMonitorField(fields, 'Action', actionText, accepted ? '' : 'rejected');
+  appendAgentMonitorField(fields, 'Result', accepted ? 'accepted' : 'rejected', accepted ? '' : 'rejected');
+  appendAgentMonitorField(fields, 'Position', pos ? `(${pos.r}, ${pos.c})` : '');
+  if (intent) {
+    appendAgentMonitorField(fields, 'Phase', intent.phase);
+    appendAgentMonitorField(fields, 'Subgoal', intent.subgoal);
+    appendAgentMonitorField(fields, 'Intent', intent.reason || intent.message);
+    appendAgentMonitorField(fields, 'Planned', intent.action);
+    appendAgentMonitorField(fields, 'Server', intent.actualAction);
+  }
+  if (actionEvent) {
+    appendAgentMonitorField(fields, 'Move', movementText(actionEvent));
+    appendAgentMonitorField(fields, 'Box', boxMovementText(actionEvent));
+  }
+  els.agentActionBody.appendChild(fields);
+  els.agentActionPanel.hidden = false;
+  els.boardWrap.classList.add('agentPanelOpen');
+  requestAnimationFrame(updateAgentActionPanelLayout);
+}
+
+function updateAgentActionPanelLayout() {
+  if (!els.agentActionPanel || els.agentActionPanel.hidden) return;
+  applyAgentPanelHeight();
+  const overflow = els.agentActionBody.scrollHeight - els.agentActionBody.clientHeight;
+  if (overflow > 1) {
+    const nextHeight = Math.min(maxAgentPanelHeight(), Math.ceil(agentPanelHeight + overflow));
+    if (nextHeight > agentPanelHeight) {
+      agentPanelHeight = nextHeight;
+      applyAgentPanelHeight();
+    }
+  }
+  updateAgentPanelStackOffset();
+}
+
+function resetAgentPanelHeight() {
+  agentPanelHeight = DEFAULT_AGENT_PANEL_HEIGHT;
+  applyAgentPanelHeight();
+}
+
+function applyAgentPanelHeight() {
+  if (!els.agentActionPanel) return;
+  const height = Math.min(agentPanelHeight, maxAgentPanelHeight());
+  els.agentActionPanel.style.setProperty('--agent-panel-height', `${height}px`);
+}
+
+function maxAgentPanelHeight() {
+  const available = els.boardWrap ? els.boardWrap.clientHeight - 74 : MAX_AGENT_PANEL_HEIGHT;
+  return Math.max(180, Math.min(MAX_AGENT_PANEL_HEIGHT, available));
+}
+
+function updateAgentPanelStackOffset() {
+  if (!els.agentActionPanel || els.agentActionPanel.hidden) {
+    clearAgentPanelStackOffset();
+    return;
+  }
+  const panelHeight = Math.ceil(els.agentActionPanel.offsetHeight);
+  els.boardWrap.style.setProperty('--agent-panel-stack-bottom', `${panelHeight + 54}px`);
+  els.boardWrap.style.setProperty('--agent-panel-stack-clearance', `${panelHeight + 82}px`);
+}
+
+function clearAgentPanelStackOffset() {
+  els.boardWrap.style.removeProperty('--agent-panel-stack-bottom');
+  els.boardWrap.style.removeProperty('--agent-panel-stack-clearance');
+  if (els.agentActionPanel) {
+    els.agentActionPanel.style.removeProperty('--agent-panel-height');
+  }
+}
+
+function appendAgentMonitorField(parent, label, value, valueClass = '') {
+  const formatted = formatEventValue(value);
+  if (!formatted) return;
+  const dt = document.createElement('dt');
+  dt.textContent = label;
+  const dd = document.createElement('dd');
+  dd.textContent = formatted;
+  if (valueClass) dd.className = valueClass;
+  parent.appendChild(dt);
+  parent.appendChild(dd);
+}
+
+function movementText(event) {
+  const from = formatEventValue(event?.from);
+  const to = formatEventValue(event?.to);
+  if (!from && !to) return '';
+  return `${from || '?'} -> ${to || '?'}`;
+}
+
+function boxMovementText(event) {
+  if (!event || !event.boxType) return '';
+  const from = formatEventValue(event.boxFrom);
+  const to = formatEventValue(event.boxTo);
+  return `${event.boxType} ${from || '?'} -> ${to || '?'}`;
 }
 
 function toggleStepInspector() {
@@ -977,7 +1461,14 @@ function normalizeEvent(event) {
     'agent', 'agentId', 'box', 'boxType', 'phase',
     'subgoal', 'subgoalType', 'verdict', 'action', 'actualAction',
     'stepInSegment', 'segmentSteps', 'from', 'to', 'activeSubgoal',
-    'blocker', 'blocked', 'target', 'goal', 'cause',
+    'blocker', 'blockerType', 'targetBlocker', 'parking', 'releasedTo',
+    'blocked', 'target', 'goal', 'cause', 'dominantReason',
+    'selectedBox', 'selectionLayer', 'hungarianStatus',
+    'candidateRejectCounts', 'candidateSamples',
+    'bspAlgorithm', 'bspReason', 'bspExplored', 'bspBudget',
+    'failedRounds', 'blockersBefore', 'blockersAfter',
+    'accessDepthBefore', 'accessDepthAfter', 'ordinaryBlockersAfter',
+    'protectedCells', 'taskCriticalCells', 'reservedTemps',
   ];
   const seen = new Set(['kind', 'type', 'category', 'severity', 'priority', 'level', 'title', 'label', 'name', 'message', 'reason', 'summary', 'detail', 'step', 'frame', 'frameIndex', 'tick', 'timestep']);
   for (const key of preferred) {
@@ -988,7 +1479,7 @@ function normalizeEvent(event) {
   }
   for (const [key, value] of Object.entries(event)) {
     if (seen.has(key) || value === undefined || value === null) continue;
-    if (fields.length >= 12) break;
+    if (fields.length >= 18) break;
     fields.push([labelForEventKey(key), value]);
   }
   return {

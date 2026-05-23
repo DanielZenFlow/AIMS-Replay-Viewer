@@ -5,7 +5,7 @@
 
   <groupId>dk.dtu.aims</groupId>
   <artifactId>aims-replay-viewer</artifactId>
-  <version>1.0.1</version>
+  <version>1.0.2</version>
   <packaging>jar</packaging>
 
   <name>AIMS Replay Viewer</name>
@@ -39,3 +39,4 @@
     </plugins>
   </build>
 </project>
+
